@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>测量计算器：高斯投影正算 + 方位角</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:22px;font-family:"Microsoft YaHei","微软雅黑",system-ui,sans-serif;background:#f5f6f8;color:#1f2328}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{font-size:13px;color:#6b7280;margin-bottom:16px}
+  .card{background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:16px;margin-bottom:14px}
+  h2{font-size:15px;margin:0 0 12px;color:#1f3864;padding-bottom:8px;border-bottom:1px solid #eef0f2}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+  label{display:block;font-size:12px;color:#4b5563;margin-bottom:4px}
+  input{width:100%;padding:8px 10px;font-size:14px;border:1px solid #d7dbe0;border-radius:7px;font-family:Consolas,monospace}
+  input:focus{outline:none;border-color:#2f6fed}
+  button{margin-top:14px;padding:9px 24px;font-size:14px;border-radius:8px;cursor:pointer;border:1px solid #2f6fed;background:#2f6fed;color:#fff;font-weight:600}
+  button:hover{background:#2559c4}
+  .out{margin-top:14px;padding:12px 14px;background:#f8f9fb;border:1px solid #e8ebef;border-radius:8px;font-size:14px;line-height:1.9}
+  .out b{color:#1f3864}
+  .big{font-size:17px;font-weight:700;color:#111}
+  .mono{font-family:Consolas,monospace}
+  .hint{font-size:12px;color:#9ca3af;margin-top:8px;line-height:1.6}
+  .warn{color:#b45309;font-size:12px;margin-top:8px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>测量计算器：高斯投影正算 + 方位角</h1>
+  <div class="sub">完全本地运行。用于复核 AI 给的投影坐标和方位角。</div>
+
+  <div class="card">
+    <h2>一、高斯-克吕格正算（经纬度 → X/Y）</h2>
+    <div class="grid">
+      <div><label>纬度 B（度，北纬为正）</label><input id="lat" value="23.128795"></div>
+      <div><label>经度 L（度，东经为正）</label><input id="lon" value="113.258976"></div>
+      <div><label>中央子午线（度）</label><input id="cm" value="114"></div>
+      <div><label>带号（3度带：L/3 取整）</label><input id="zone" value="38"></div>
+    </div>
+    <button onclick="calcGK()">计算</button>
+    <div class="out" id="gkOut">点「计算」查看结果</div>
+    <div class="hint">
+      算法：Snyder 横轴墨卡托级数展开，CGCS2000 椭球（a=6378137, f=1/298.257222101），k₀=1，东伪 500000 m。<br>
+      中央子午线 ±3.5° 内，精度优于 1 mm。<b>自检方法：把经度设成等于中央子午线，Y 必须正好是 500000.000。</b>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>二、方位角与距离（A 点 → B 点）</h2>
+    <div class="grid">
+      <div><label>A 纬度</label><input id="alat" value="22.77"></div>
+      <div><label>A 经度</label><input id="alon" value="111.57"></div>
+      <div><label>B 纬度</label><input id="blat" value="39.90"></div>
+      <div><label>B 经度</label><input id="blon" value="116.40"></div>
+    </div>
+    <button onclick="calcAz()">计算</button>
+    <div class="out" id="azOut">点「计算」查看结果</div>
+    <div class="hint">
+      采用球面大圆公式（地球平均半径 6371.0088 km），方位角自正北起顺时针计。<br>
+      球面与椭球结果的差异通常在 0.1° 以内，用于核对 AI 答案足够了。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>三、怎么用这个工具判 AI 的答案</h2>
+    <div class="hint" style="font-size:12.5px;line-height:1.9">
+      <b>判投影坐标：</b>把 AI 自己给出的经纬度填进第一部分，算出 X/Y，再和它报的 X/Y 比。<br>
+      差值 ≤ 0.5 km → 可以认；0.5~5 km → 明显偏差；&gt; 5 km → 算错了（广州东西跨度才约 30 km）。<br><br>
+      <b>判方位角：</b>把两点经纬度填进第二部分，比较角度差。差 &gt; 5° 基本就是算错了。
+    </div>
+  </div>
+</div>
+
+<script>
+var A_ELL = 6378137.0;
+var F_ELL = 1 / 298.257222101;
+var E2 = 2 * F_ELL - F_ELL * F_ELL;
+var EP2 = E2 / (1 - E2);
+
+function rad(d) { return d * Math.PI / 180; }
+
+function gkForward(latDeg, lonDeg, cmDeg, k0, fe) {
+  var phi = rad(latDeg), lam = rad(lonDeg), lam0 = rad(cmDeg);
+  var sp = Math.sin(phi), cp = Math.cos(phi), tp = Math.tan(phi);
+  var N = A_ELL / Math.sqrt(1 - E2 * sp * sp);
+  var T = tp * tp;
+  var C = EP2 * cp * cp;
+  var A = (lam - lam0) * cp;
+  var M = A_ELL * ((1 - E2 / 4 - 3 * E2 * E2 / 64 - 5 * E2 * E2 * E2 / 256) * phi
+        - (3 * E2 / 8 + 3 * E2 * E2 / 32 + 45 * E2 * E2 * E2 / 1024) * Math.sin(2 * phi)
+        + (15 * E2 * E2 / 256 + 45 * E2 * E2 * E2 / 1024) * Math.sin(4 * phi)
+        - (35 * E2 * E2 * E2 / 3072) * Math.sin(6 * phi));
+  var east = k0 * N * (A + (1 - T + C) * Math.pow(A, 3) / 6
+             + (5 - 18 * T + T * T + 72 * C - 58 * EP2) * Math.pow(A, 5) / 120) + fe;
+  var north = k0 * (M + N * tp * (A * A / 2
+              + (5 - T + 9 * C + 4 * C * C) * Math.pow(A, 4) / 24
+              + (61 - 58 * T + T * T + 600 * C - 330 * EP2) * Math.pow(A, 6) / 720));
+  return { x: north, y: east };
+}
+
+function fmt(n, d) {
+  return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function calcGK() {
+  var lat = parseFloat(document.getElementById('lat').value);
+  var lon = parseFloat(document.getElementById('lon').value);
+  var cm = parseFloat(document.getElementById('cm').value);
+  var zone = parseFloat(document.getElementById('zone').value);
+  var out = document.getElementById('gkOut');
+
+  if (isNaN(lat) || isNaN(lon) || isNaN(cm)) {
+    out.innerHTML = '<span style="color:#dc2626">请输入有效数字</span>';
+    return;
+  }
+  if (Math.abs(lon - cm) > 3.5) {
+    out.innerHTML = '<span style="color:#b45309">⚠ 经度与中央子午线相差 '
+      + (lon - cm).toFixed(2) + '°，超出 3° 带的正常范围，结果不可靠。请检查中央子午线。</span>';
+    return;
+  }
+  var r = gkForward(lat, lon, cm, 1.0, 500000);
+
+  var html = '';
+  html += '<div>X（北方向）= <span class="big mono">' + fmt(r.x, 3) + '</span> m</div>';
+  html += '<div>Y（东方向，不含带号）= <span class="big mono">' + fmt(r.y, 3) + '</span> m</div>';
+  if (!isNaN(zone)) {
+    html += '<div>Y（含带号 ' + zone + '）= <span class="mono">'
+          + fmt(zone * 1000000 + r.y, 3) + '</span> m</div>';
+  }
+  html += '<div style="margin-top:8px;font-size:13px;color:#4b5563">'
+       + 'EPSG 对照：不含带号 → <b>EPSG:4547</b>（CGCS2000 / 3-degree GK CM ' + cm + 'E）；'
+       + '含带号 → <b>EPSG:4526</b>（zone ' + zone + '）。两者给的是同一个点，只是 Y 的写法不同。</div>';
+  out.innerHTML = html;
+}
+
+function calcAz() {
+  var la1 = parseFloat(document.getElementById('alat').value);
+  var lo1 = parseFloat(document.getElementById('alon').value);
+  var la2 = parseFloat(document.getElementById('blat').value);
+  var lo2 = parseFloat(document.getElementById('blon').value);
+  var out = document.getElementById('azOut');
+  if ([la1, lo1, la2, lo2].some(isNaN)) {
+    out.innerHTML = '<span style="color:#dc2626">请输入有效数字</span>';
+    return;
+  }
+  var R = 6371.0088;
+  var p1 = rad(la1), p2 = rad(la2), dl = rad(lo2 - lo1);
+  var y = Math.sin(dl) * Math.cos(p2);
+  var x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  var az = Math.atan2(y, x) * 180 / Math.PI;
+  if (az < 0) az += 360;
+
+  var dphi = p2 - p1;
+  var hav = Math.sin(dphi / 2) * Math.sin(dphi / 2)
+          + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+  var dist = 2 * R * Math.asin(Math.min(1, Math.sqrt(hav)));
+
+  var html = '';
+  html += '<div>起始方位角（自正北顺时针）= <span class="big mono">' + az.toFixed(2) + '°</span></div>';
+  html += '<div>大圆距离 = <span class="mono">' + dist.toFixed(1) + '</span> km</div>';
+  var dir = az < 90 ? '北偏东' : (az < 180 ? '南偏东' : (az < 270 ? '南偏西' : '北偏西'));
+  html += '<div style="font-size:13px;color:#4b5563">方向：' + dir + '</div>';
+  out.innerHTML = html;
+}
+
+calcGK();
+calcAz();
+</script>
+</body>
+</html>

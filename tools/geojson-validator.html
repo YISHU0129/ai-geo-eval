@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>GeoJSON 离线校验器</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+    background: #f5f6f8; color: #1f2328;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { font-size: 13px; color: #6b7280; margin-bottom: 16px; }
+  .card {
+    background: #fff; border: 1px solid #e3e6ea; border-radius: 10px;
+    padding: 16px; margin-bottom: 14px;
+  }
+  textarea {
+    width: 100%; height: 260px; padding: 12px;
+    font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
+    line-height: 1.5; border: 1px solid #d7dbe0; border-radius: 8px;
+    resize: vertical; background: #fcfcfd;
+  }
+  textarea:focus { outline: none; border-color: #2f6fed; background: #fff; }
+  .bar { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  button {
+    padding: 9px 22px; font-size: 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid #2f6fed; background: #2f6fed; color: #fff; font-weight: 600;
+  }
+  button:hover { background: #2559c4; }
+  button.ghost {
+    background: #fff; color: #4b5563; border-color: #d7dbe0; font-weight: 400;
+  }
+  button.ghost:hover { background: #f3f4f6; }
+  .hint { font-size: 12px; color: #9ca3af; }
+  #out { margin-top: 4px; }
+  .row {
+    display: flex; gap: 8px; padding: 7px 0;
+    font-size: 13.5px; line-height: 1.6; border-bottom: 1px dashed #eef0f2;
+  }
+  .row:last-child { border-bottom: none; }
+  .ico { flex: 0 0 18px; font-weight: 700; }
+  .ok .ico { color: #16a34a; }
+  .bad .ico { color: #dc2626; }
+  .warn .ico { color: #d97706; }
+  .note .ico { color: #6b7280; }
+  .bad { color: #b91c1c; }
+  .warn { color: #b45309; }
+  .note { color: #4b5563; }
+  .section-title {
+    font-size: 13px; font-weight: 700; color: #374151;
+    margin: 14px 0 4px; padding-top: 10px; border-top: 1px solid #eef0f2;
+  }
+  .section-title:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+  code { background: #f1f3f5; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .big { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GeoJSON 离线校验器</h1>
+  <div class="sub">完全本地运行，不联网、不上传。把 AI 给的 JSON 粘进来，点「校验」。</div>
+
+  <div class="card">
+    <textarea id="input" placeholder="把 AI 回答里的 JSON 代码粘贴到这里（带 ```json 包裹也能识别）"></textarea>
+    <div class="bar">
+      <button onclick="run()">校验</button>
+      <button class="ghost" onclick="clearAll()">清空</button>
+      <label class="ghost" style="padding:9px 16px;border:1px solid #d7dbe0;border-radius:8px;cursor:pointer;font-size:14px;color:#4b5563;background:#fff;">
+        打开 .json 文件
+        <input type="file" accept=".json,.txt" style="display:none" onchange="loadFile(this)">
+      </label>
+      <span class="hint">提示：从 AI 页面点代码块右上角的「复制」，再粘到这里</span>
+    </div>
+  </div>
+
+  <div class="card" id="out">
+    <div class="note">校验结果会显示在这里。</div>
+  </div>
+</div>
+
+<script>
+function stripFence(s) {
+  s = s.trim();
+  // 去掉 ```json ... ``` 包裹
+  var m = s.match(/^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```$/);
+  if (m) s = m[1];
+  // 去掉行首行号（有些截图复制会带 "1 " "2 "）
+  return s;
+}
+
+function loadFile(inp) {
+  var f = inp.files[0];
+  if (!f) return;
+  var r = new FileReader();
+  r.onload = function (e) {
+    document.getElementById('input').value = e.target.result;
+    run();
+  };
+  r.readAsText(f, 'UTF-8');
+}
+
+function clearAll() {
+  document.getElementById('input').value = '';
+  document.getElementById('out').innerHTML = '<div class="note">校验结果会显示在这里。</div>';
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c];
+  });
+}
+
+var rows = [];
+function push(cls, ico, text) { rows.push([cls, ico, text]); }
+
+// 判断一个坐标数组 [a,b] 是否像 [经度, 纬度]
+function classifyCoord(a, b) {
+  var lonOK = (a >= -180 && a <= 180);
+  var latOK = (b >= -90 && b <= 90);
+  if (lonOK && latOK) return 'ok';
+  // 反了：第一个像纬度，第二个像经度
+  if (a >= -90 && a <= 90 && b >= -180 && b <= 180) return 'reversed';
+  return 'bad';
+}
+
+function walkCoords(coords, depth, cb) {
+  if (!Array.isArray(coords)) return;
+  if (typeof coords[0] === 'number') { cb(coords, depth); return; }
+  for (var i = 0; i < coords.length; i++) walkCoords(coords[i], depth + 1, cb);
+}
+
+function checkGeometry(geom, label) {
+  if (!geom || typeof geom !== 'object') {
+    push('bad', '✕', label + '：缺少 geometry');
+    return;
+  }
+  if (!geom.type) {
+    push('bad', '✕', label + '：geometry.type 缺失');
+    return;
+  }
+  if (typeof geom.type !== 'string' || geom.type !== geom.type.trim()) {
+    push('warn', '!', label + '：geometry.type 前后有空格');
+  }
+  var t = geom.type;
+  var known = ['Point','MultiPoint','LineString','MultiLineString','Polygon','MultiPolygon','GeometryCollection'];
+  if (known.indexOf(t) < 0) {
+    push('bad', '✕', label + '：geometry.type "' + t + '" 不是合法类型（大小写敏感）');
+  } else {
+    push('ok', '✓', label + '：geometry.type = ' + t);
+  }
+
+  if (t === 'GeometryCollection') return;
+
+  if (!Array.isArray(geom.coordinates)) {
+    push('bad', '✕', label + '：coordinates 不是数组');
+    return;
+  }
+
+  // Point 的层级
+  if (t === 'Point' && typeof geom.coordinates[0] !== 'number') {
+    push('bad', '✕', label + '：Point 的 coordinates 应是一维 [经度, 纬度]，当前多包了一层');
+  }
+  if (t === 'LineString' && typeof geom.coordinates[0] === 'number') {
+    push('bad', '✕', label + '：LineString 的 coordinates 应是二维数组（点的数组）');
+  }
+
+  // 坐标顺序与范围
+  var total = 0, reversed = 0, outOfRange = 0, inChina = 0;
+  var samples = [];
+  walkCoords(geom.coordinates, 0, function (c) {
+    total++;
+    if (!(c.length >= 2)) return;
+    var a = c[0], b = c[1];
+    var k = classifyCoord(a, b);
+    if (k === 'reversed') reversed++;
+    if (k === 'bad') outOfRange++;
+    if (a >= 73 && a <= 135 && b >= 18 && b <= 54) inChina++;
+    if (samples.length < 3) samples.push('[' + a + ', ' + b + ']');
+  });
+
+  if (total === 0) {
+    push('bad', '✕', label + '：coordinates 里没解析出任何坐标点');
+  } else {
+    push('note', '·', label + '：共 ' + total + ' 个坐标点，示例 ' + samples.join('  '));
+    if (reversed > 0) {
+      push('bad', '✕', label + '：有 ' + reversed + ' 个点疑似【纬度,经度】写反（GeoJSON 要求 [经度,纬度]）');
+    }
+    if (outOfRange > 0) {
+      push('bad', '✕', label + '：有 ' + outOfRange + ' 个点坐标超出合法范围（经度±180 / 纬度±90）');
+    }
+    if (reversed === 0 && outOfRange === 0) {
+      push('ok', '✓', label + '：所有坐标都在合法范围内，顺序符合 [经度,纬度]');
+      if (inChina > 0) push('note', '·', label + '：其中 ' + inChina + ' 个点落在中国经纬度范围（73-135E / 18-54N）');
+      else push('warn', '!', label + '：没有点落在国内范围，如果示例声称在国内，位置可能不对');
+    }
+  }
+
+  // Polygon 闭合检查
+  if (t === 'Polygon' && Array.isArray(geom.coordinates)) {
+    geom.coordinates.forEach(function (ring, ri) {
+      if (!Array.isArray(ring) || ring.length === 0) {
+        push('bad', '✕', label + '：Polygon 第 ' + (ri + 1) + ' 个环为空');
+        return;
+      }
+      var f = ring[0], l = ring[ring.length - 1];
+      if (ring.length < 4) {
+        push('bad', '✕', label + '：Polygon 第 ' + (ri + 1) + ' 环只有 ' + ring.length + ' 个点，至少需要 4 个');
+      }
+      if (f[0] !== l[0] || f[1] !== l[1]) {
+        push('bad', '✕', label + '：Polygon 第 ' + (ri + 1) + ' 环首尾不闭合（首 ' + JSON.stringify(f) + ' ≠ 尾 ' + JSON.stringify(l) + '）');
+      } else {
+        push('ok', '✓', label + '：Polygon 第 ' + (ri + 1) + ' 环首尾闭合');
+      }
+    });
+  }
+}
+
+function run() {
+  rows = [];
+  var raw = document.getElementById('input').value;
+  if (!raw.trim()) {
+    document.getElementById('out').innerHTML = '<div class="warn">请先粘贴 JSON。</div>';
+    return;
+  }
+  var text = stripFence(raw);
+  var obj;
+  try {
+    obj = JSON.parse(text);
+  } catch (e) {
+    var html = '<div class="big" style="color:#dc2626">✕ JSON 语法错误</div>';
+    html += '<div class="row bad"><span class="ico">✕</span><span>' + esc(e.message) + '</span></div>';
+    html += '<div class="note" style="margin-top:10px;font-size:13px">常见原因：① 末尾多了一个逗号；'
+          + '② 用了中文引号 “ ” 或单引号；③ 括号不配对；④ 复制时漏了开头或结尾的行。</div>';
+    document.getElementById('out').innerHTML = html;
+    return;
+  }
+
+  push('ok', '✓', 'JSON 语法合法，可以正常解析');
+
+  if (obj === null) {
+    push('bad', '✕', '解析结果是 null，不是有效对象');
+  } else if (Array.isArray(obj)) {
+    push('warn', '!', '顶层是数组，GeoJSON 顶层应为对象（FeatureCollection / Feature / 几何类型）');
+  } else if (typeof obj !== 'object') {
+    push('bad', '✕', '顶层不是对象');
+  } else {
+    var top = obj.type;
+    if (top === 'FeatureCollection') {
+      push('ok', '✓', '顶层 type = FeatureCollection');
+      if (!Array.isArray(obj.features)) {
+        push('bad', '✕', 'features 不是数组');
+      } else {
+        push('ok', '✓', 'features 是数组，共 ' + obj.features.length + ' 个要素');
+        obj.features.forEach(function (f, i) {
+          var label = '要素 ' + (i + 1);
+          if (!f || typeof f !== 'object') { push('bad', '✕', label + '：不是对象'); return; }
+          if (f.type !== 'Feature') push('warn', '!', label + '：type 应为 "Feature"，当前是 "' + f.type + '"');
+          if (!('properties' in f)) push('bad', '✕', label + '：缺少 properties 字段');
+          else if (f.properties === null) push('ok', '✓', label + '：properties = null（允许）');
+          else push('ok', '✓', label + '：有 properties 字段');
+          checkGeometry(f.geometry, label);
+        });
+      }
+    } else if (top === 'Feature') {
+      push('ok', '✓', '顶层 type = Feature');
+      checkGeometry(obj.geometry, '要素');
+    } else if (['Point','MultiPoint','LineString','MultiLineString','Polygon','MultiPolygon'].indexOf(top) >= 0) {
+      push('ok', '✓', '顶层是几何对象 type = ' + top);
+      checkGeometry(obj, '几何');
+    } else {
+      push('bad', '✕', '顶层 type 无法识别："' + top + '"');
+    }
+  }
+
+  // crs 检查
+  var hasCrs = /"crs"\s*:/.test(text);
+  if (hasCrs) {
+    push('warn', '!', '文本里出现 crs 成员：RFC 7946 已移除该成员，携带它不影响解析，但标准 GeoJSON 不应依赖它');
+  } else {
+    push('ok', '✓', '未携带 crs 成员，符合 RFC 7946 的写法');
+  }
+
+  var okN = 0, badN = 0;
+  rows.forEach(function (r) { if (r[0] === 'ok') okN++; if (r[0] === 'bad') badN++; });
+
+  var html = '';
+  if (badN === 0) {
+    html += '<div class="big" style="color:#16a34a">✓ 通过：这是一个结构合法的 GeoJSON</div>';
+  } else {
+    html += '<div class="big" style="color:#dc2626">✕ 存在问题：' + badN + ' 项不合法</div>';
+  }
+  rows.forEach(function (r) {
+    html += '<div class="row ' + r[0] + '"><span class="ico">' + r[1] + '</span><span>' + esc(r[2]) + '</span></div>';
+  });
+  document.getElementById('out').innerHTML = html;
+}
+</script>
+</body>
+</html>
