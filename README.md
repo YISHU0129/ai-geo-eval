@@ -76,11 +76,11 @@
 
 ## 四、文件说明
 
+> **产品需求文档（PRD）**：[PRD_坐标类AI回答自洽性校验.pdf](PRD_坐标类AI回答自洽性校验.pdf) — 三层防御 / P0-P2 需求 / 验收标准 / 14 条回归集
 | 文件 | 说明 |
 |---|---|
 | [`report.pdf`](report.pdf) | 完整评测报告，4 页（含界面改进原型） |
 | [`prototype.png`](prototype.png) | 同报告图 1：左为现状、右为改进方案 |
-| [`PRD_坐标类AI回答自洽性校验.pdf`](PRD_坐标类AI回答自洽性校验.pdf) | 产品需求文档：坐标类回答的自洽性校验（三层防御、P0/P1/P2 需求、验收标准、14 条回归集） |
 | [`test-data.xlsx`](test-data.xlsx) | 72 组原始判定，含摘要 / 依据 / 错误分类 |
 | [`error-log.xlsx`](error-log.xlsx) | **我在过程中犯的 35 个错误**，逐条写明原来是什么、改成什么、为什么错 |
 | [`tools/measurement-calculator.html`](tools/measurement-calculator.html) | 自建离线工具：高斯正算 + 方位角（浏览器直接打开） |
